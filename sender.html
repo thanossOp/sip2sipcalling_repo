@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SIP Calling (Sender)</title>
+  </head>
+  <body>
+    <h1>SIP Calling Demo (Sender)</h1>
+    <button onclick="makeCall()" id="startRecognition">Make Call</button>
+    <button onclick="endCall()">End Call</button>
+    <div id="transcriptBox"></div>
+    <div id="transcriptList"></div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sip.js/0.20.0/sip.min.js"></script>
+    <script>
+      const startRecognition = document.getElementById("startRecognition");
+      const audioplayer = document.getElementById("audioplayer");
+      const transcriptBox = document.getElementById("transcriptBox");
+      const transcriptList = document.getElementById("transcriptList");
+
+      let recognition;
+      let isListening = false;
+      let audioAction;
+      let tag;
+      let answer;
+      let userAgent;
+      let currentSession;
+      let guid = "";
+
+      function uuidv4() {
+        return "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
+          (
+            +c ^
+            (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (+c / 4)))
+          ).toString(16)
+        );
+      }
+
+      function sendAudioRequest(action) {
+        audioAction = action;
+        fetch("http://127.0.0.1:5000/callUser", {
+          method: "POST",
+          body: JSON.stringify({ action: action }),
+          headers: {
+            "Content-Type": "application/json",
+            "X-GUID": guid,
+          },
+        })
+          .then((response) => {
+            return response.json();
+          })
+          .then((data) => {
+            console.log("data", data.audio_data);
+            const audioMessage = `AUDIO_DATA:${data.audio_data}`;
+            socket.send(audioMessage);
+          })
+          .catch((error) => {
+            console.error("error>>", error);
+          });
+      }
+
+      const uri = new SIP.URI(
+        "sip",
+        "UserA",
+        "thanosdestroyer.sip.us1.twilio.com"
+      );
+      const sipConfig = {
+        uri: uri,
+        transportOptions: {
+          wsServers: "ws://192.168.56.1:8080",
+        },
+        authorizationUser: "UserA",
+        password: "Nisarg07212001",
+        delegate: {
+          onInvite: (inviteRequest) => {
+            console.log("Received incoming invitation");
+          },
+        },
+      };
+
+      const socket = new WebSocket("ws://192.168.56.1:8080");
+      socket.onopen = () => {
+        console.log("WebSocket connected");
+      };
+
+      userAgent = new SIP.UserAgent(sipConfig);
+
+      const registerer = new SIP.Registerer(userAgent);
+
+      function sendUserResponse(response) {
+        audioAction = "recieve_call_response";
+        fetch("http://127.0.0.1:5000/callUser", {
+          method: "POST",
+          body: JSON.stringify({
+            action: "recieve_call_response",
+            response: response,
+          }),
+          headers: {
+            "Content-Type": "application/json",
+          },
+        })
+          .then((response) => {
+            return response.json();
+          })
+          .then((data) => {
+            console.log("second data", data.audio_data);
+            const audioMessage = `AUDIO_DATA:${data.audio_data}`;
+            console.log("file name", data.filename);
+            socket.send(audioMessage);
+          })
+          .catch((error) => {
+            console.error(error);
+          });
+      }
+
+      function sendInvite() {
+        const targetURI = new SIP.URI(
+          "sip",
+          "UserB",
+          "recieverside.sip.us1.twilio.com"
+        );
+        console.log("targetUrl", targetURI);
+        const inviter = new SIP.Inviter(userAgent, targetURI, {
+          sessionDescriptionHandlerOptions: {
+            constraints: { audio: true, video: false },
+          },
+        });
+        inviter.invite();
+        console.log("Invite Sent Successfully", inviter);
+
+        return inviter;
+      }
+
+      let inviter;
+
+      function makeCall() {
+        startRecognition.disabled = true;
+
+        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+          navigator.mediaDevices
+            .getUserMedia({ audio: true })
+            .then((stream) => {
+              console.log("tracks",stream.getTracks()[0])
+              stream.getTracks()[0].enabled = false
+              //stream.getTracks()[0].muted = true
+            })
+            .catch((error) => {
+              console.error("Error disabling sender's microphone:", error);
+            });
+        }
+
+        userAgent.start().then(() => {
+          console.log("SIP user started");
+          registerer.register();
+          inviter = sendInvite();
+
+          inviter?.stateChange.addListener((newState) => {
+            console.log("newstate", newState);
+            switch (newState) {
+              case SIP.SessionState.Establishing:
+                console.log("Session is establishing...");
+                guid = uuidv4();
+                sendAudioRequest("send_call_audio");
+                break;
+              case SIP.SessionState.Established:
+                console.log("Session has been established!");
+                currentSession = inviter;
+                transcribeRemoteAudio();
+                break;
+              case SIP.SessionState.Terminated:
+                console.log("Session has terminated.");
+                break;
+              default:
+                console.log("Default state.");
+                break;
+            }
+          });
+        });
+      }
+
+      function transcribeRemoteAudio() {
+
+        console.log("recognition start");
+        recognition = new webkitSpeechRecognition();
+        recognition.lang = "en-US";
+        recognition.continuous = true;
+        recognition.interimResults = true;
+
+        recognition.onresult = (event) => {
+          let interim_transcript = "";
+
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            if (event.results[i].isFinal) {
+              const transcript = event.results[i][0].transcript;
+              console.log("transcript", transcript);
+              sendUserResponse(transcript);
+              const listItem = document.createElement("li");
+              listItem.textContent = transcript;
+              transcriptList.appendChild(listItem);
+            } else {
+              interim_transcript += event.results[i][0].transcript;
+              transcriptBox.textContent = interim_transcript;
+            }
+          }
+        };
+
+        recognition.onerror = (event) => {
+          console.error("Error during transcription:", event.error);
+        };
+
+        recognition.onend = () => {
+          sendUserResponse("");
+          //recognition.start();
+        };
+
+        recognition.start();
+      }
+
+      function endCall() {
+        if (currentSession) {
+          currentSession.terminate();
+        }
+      }
+    </script>
+  </body>
+</html>

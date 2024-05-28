@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SIP Receiver</title>
+  </head>
+  <body>
+    <h1>SIP Receiver</h1>
+    <audio id="localAudio" autoplay muted></audio>
+    <audio id="remoteAudio" autoplay></audio>
+    <button id="answerButton">Answer Call</button>
+    <button id="rejectButton">Reject Call</button>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sip.js/0.20.0/sip.min.js"></script>
+    <script>
+      document.addEventListener("DOMContentLoaded", function () {
+        let localstream;
+        let pythonScript;
+        let remotestream = new MediaStream();
+        let incomingInviteRequest;
+        let audioBase64;
+        let shouldiplay = false;
+
+        const uri = new SIP.URI(
+          "sip",
+          "UserB",
+          "recieverside.sip.us1.twilio.com"
+        );
+        const sipConfig = {
+          uri: uri,
+          transportOptions: {
+            wsServers: "ws://192.168.56.1:8080",
+          },
+          authorizationUser: "UserB",
+          password: "Nisarg07212001",
+          delegate: {
+            onInvite: (inviteRequest) => {
+              console.log("Incoming call invitation", inviteRequest);
+              incomingInviteRequest = inviteRequest;
+              document.getElementById("answerButton").style.display = "inline";
+              document.getElementById("rejectButton").style.display = "inline";
+            },
+          },
+        };
+        const socket = new WebSocket("ws://192.168.56.1:8080");
+        socket.onopen = () => {
+          console.log("WebSocket connected");
+        };
+
+        socket.onmessage = (event) => {
+          console.log("Received event:", event);
+
+          if (event.data instanceof Blob) {
+            const reader = new FileReader();
+
+            reader.onload = () => {
+              const message = reader.result;
+              console.log("message", message);
+
+              if (
+                typeof message === "string" &&
+                message.startsWith("AUDIO_DATA:")
+              ) {
+                const base64Audio = message.split(":")[1];
+                console.log("Received audio data:", base64Audio);
+                audioBase64 = base64Audio;
+                if (shouldiplay) {
+                  const audioblob = base64ToBlob(audioBase64, "audio/mpeg");
+                  const audiourl = URL.createObjectURL(audioblob);
+                  const audioelement = new Audio(audiourl);
+                  audioelement.play();
+                }
+              } else {
+                console.log("Received unexpected message:", message);
+              }
+            };
+
+            reader.readAsText(event.data); // Read the Blob data as text
+          } else {
+            console.log("Received unexpected data type:", event.data);
+          }
+        };
+
+        let userAgent;
+        userAgent = new SIP.UserAgent(sipConfig);
+        const registerer = new SIP.Registerer(userAgent);
+        userAgent.start().then(() => {
+          console.log("SIP user started");
+          registerer.register();
+        });
+
+        function base64ToBlob(base64, mimeType) {
+          try {
+            const binaryString = window.atob(base64);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+              bytes[i] = binaryString.charCodeAt(i);
+            }
+            return new Blob([bytes], { type: mimeType });
+          } catch (error) {
+            console.error("Failed to decode base64 string:", error);
+            return null;
+          }
+        }
+
+        document
+          .getElementById("answerButton")
+          .addEventListener("click", () => {
+            acceptCall(incomingInviteRequest);
+          });
+
+        async function acceptCall(inviteRequest) {
+          navigator.mediaDevices
+            .getUserMedia({ audio: true, video: false })
+            .then(async (stream) => {
+              localstream = stream;
+              const localAudio = document.getElementById("localAudio");
+              localAudio.srcObject = localstream;
+
+              console.log("inviteRequest", inviteRequest);
+
+              inviteRequest
+                .accept({
+                  sessionDescriptionHandlerOptions: {
+                    constraints: { audio: true, video: false },
+                    stream: localstream,
+                  },
+                })
+                .then((event) => {
+                  console.log(
+                    "Call accepted",
+                    inviteRequest.sessionDescriptionHandler.peerConnection
+                  );
+                  document.getElementById("answerButton").disabled = true;
+
+                  console.log("base64", audioBase64);
+
+                  if (audioBase64) {
+                    shouldiplay = true;
+                    const audioblob = base64ToBlob(audioBase64, "audio/mpeg");
+                    const audiourl = URL.createObjectURL(audioblob);
+                    const audioelement = new Audio(audiourl);
+                    audioelement.play();
+                  }
+                });
+            })
+            .catch((error) => {
+              console.error("Error accessing microphone:", error);
+            });
+        }
+
+        document
+          .getElementById("rejectButton")
+          .addEventListener("click", () => {
+            incomingInviteRequest.reject();
+            console.log("Call rejected");
+            resetCallControls();
+          });
+
+        function resetCallControls() {
+          document.getElementById("answerButton").style.display = "none";
+          document.getElementById("rejectButton").style.display = "none";
+        }
+      });
+    </script>
+  </body>
+</html>

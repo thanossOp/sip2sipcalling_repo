@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SIP Calling (Sender)</title>
+  </head>
+  <body>
+    <h1>SIP Calling Demo (Sender)</h1>
+    <button onclick="makeCall()">Make Call</button>
+    <button onclick="endCall()">End Call</button>
+    <audio id="remoteAudio" autoplay></audio>
+    <div id="transcription"></div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sip.js/0.20.0/sip.min.js"></script>
+    <script>
+      let remotestream = new MediaStream();
+      const uri = new SIP.URI("sip", "2233586277", "sip2sip.info");
+      const sipConfig = {
+        uri: uri,
+        transportOptions: {
+          wsServers: "ws://192.168.29.139:8080",
+        },
+        authorizationUser: "2233586277",
+        password: "nisarg0721",
+        delegate: {
+          onInvite: (inviteRequest) => {
+            console.log("Received incoming invitation");
+          },
+        },
+      };
+      let userAgent;
+      let currentSession;
+      const socket = new WebSocket("ws://192.168.29.139:8080");
+      socket.onopen = () => {
+        console.log("WebSocket connected");
+      };
+
+      userAgent = new SIP.UserAgent(sipConfig);
+
+      function readFileAsBase64(file) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result.split(',')[1]);
+          reader.onerror = (error) => reject(error);
+          reader.readAsDataURL(file);
+        });
+      }
+
+      const messageFile = new Blob(['./message.mp3'], { type: 'audio/mpeg' });
+
+      function makeCall() {
+        userAgent.start().then(() => {
+          console.log("SIP user started");
+          const targetURI = new SIP.URI("sip", "2233586281", "sip2sip.info");
+          console.log("targetUrl", targetURI);
+          const inviter = new SIP.Inviter(userAgent, targetURI, {
+            sessionDescriptionHandlerOptions: {
+              constraints: { audio: true, video: false },
+            },
+          });
+          inviter.invite();
+          console.log("Invite Sent Successfully");
+          inviter.stateChange.addListener((newState) => {
+            console.log("newstate", newState);
+            switch (newState) {
+              case SIP.SessionState.Establishing:
+                console.log("Session is establishing...");
+              case SIP.SessionState.Established:
+                console.log("Session has been established!");
+                currentSession = inviter;
+
+                console.log("data",messageFile)
+                readFileAsBase64(messageFile)
+                  .then((base64Audio) => {
+                    const audioMessage = `AUDIO_DATA:${base64Audio}`;
+                    socket.send(audioMessage);
+                  })
+                  .catch((error) => console.error('Error reading file:', error));
+                break;
+              case SIP.SessionState.Terminated:
+                console.log("Session has terminated.");
+                break;
+              default:
+                console.log("Default state.");
+                break;
+            }
+          });
+        });
+      }
+
+      function endCall() {
+        if (currentSession) {
+          currentSession.terminate();
+        }
+      }
+
+      function transcribeAudio(remotestream) {
+        const recognition = new webkitSpeechRecognition();
+        recognition.lang = "en-Us";
+        recognition.continuous = true;
+        recognition.interimResults = true;
+
+        const transcriptionElement = document.getElementById("transcription");
+
+        recognition.onresult = (event) => {
+          let interim_transcript = "";
+
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            if (event.results[i].isFinal) {
+              transcriptionElement.innerHTML +=
+                event.results[i][0].transcript + "<br>";
+            } else {
+              interim_transcript += event.results[i][0].transcript;
+            }
+          }
+
+          transcriptionElement.innerHTML += interim_transcript;
+        };
+
+        recognition.onerror = (event) => {
+          console.error("Error during transcription:", event.error);
+        };
+
+        recognition.onend = () => {
+          recognition.start();
+        };
+
+        const audioContext = new AudioContext();
+        const audioSource = audioContext.createMediaStreamSource(remotestream);
+        recognition.audioContext = audioContext;
+        audioSource.connect(audioContext.destination);
+        recognition.start();
+      }
+    </script>
+  </body>
+</html>
